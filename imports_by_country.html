@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>US Imports by Country and Goods</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #172033; background: #f5f7fb; }
+    body { max-width: 1250px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 6px; letter-spacing: -.02em; } p { color: #596579; margin: 0; }
+    .dashboard-header { padding: 8px 4px 18px; }
+    .dashboard-header p { max-width: 760px; line-height: 1.5; }
+    .load, .controls, .chart-wrap { background: white; border: 1px solid #dbe2ea; border-radius: 12px; padding: 16px; margin: 14px 0; }
+    .load { display: flex; justify-content: space-between; align-items: center; min-height: 20px; }
+    .load-label { color: #596579; font-size: .85rem; }
+    label { font-weight: 650; font-size: .9rem; display: block; margin-bottom: 5px; }
+    input[type=file], select, button { font: inherit; padding: 8px; border: 1px solid #bac6d5; border-radius: 7px; background: white; }
+    select, input[type=range] { max-width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; background: #2368d1; color: white; border-color: #2368d1; }
+    button.secondary { background: #eef4ff; color: #2368d1; }
+    .controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .control-group { min-width: 0; padding: 14px; border: 1px solid #e3e8ef; border-radius: 9px; background: #fbfcfe; }
+    .control-group h2 { margin: 0 0 12px; font-size: .95rem; color: #26344d; }
+    .control-group > div + div { margin-top: 14px; }
+    .help-text { display: block; margin-top: 12px; color: #596579; line-height: 1.35; }
+    input[type=range] { width: 100%; accent-color: #2368d1; }
+    output { color: #2368d1; font-weight: 700; }
+    .formula { margin-top: 16px; padding: 12px; background: #f5f8ff; border-left: 4px solid #2368d1; line-height: 1.5; }
+    .formula summary { cursor: pointer; font-weight: 700; color: #2368d1; }
+    .formula-content { margin-top: 10px; color: #596579; }
+    .price-index { display: inline-block; margin: 10px 0; padding: 8px 12px; border-radius: 7px; background: #eef4ff; color: #2368d1; font-weight: 700; }
+    .status { color: #2368d1; font-weight: 600; }
+    svg { width: 100%; height: auto; display: block; }
+    .country { stroke: white; stroke-width: .6px; }
+    .bubble { stroke: white; stroke-width: 1.5px; fill: #d83b5b; opacity: .82; cursor: pointer; }
+    .map-label { fill: #596579; font-size: 12px; }
+    .laffer-line { fill: none; stroke: #8b3fc7; stroke-width: 3; }
+    .laffer-long { stroke: #238b45; }
+    .laffer-point { fill: #f08a24; stroke: white; stroke-width: 2; }
+    .laffer-axis { stroke: #9aa8ba; }
+    .empty { text-align: center; color: #596579; padding: 80px 0; }
+    @media (max-width: 900px) { .controls { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 600px) { body { padding: 14px; } .controls { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="dashboard-header">
+    <h1>US Imports by Country and Goods</h1>
+    <p>Explore how tariff scenarios and different elasticity assumptions affect US imports, prices, and tariff revenue.</p>
+  </header>
+  <section class="load"><span class="load-label">Data status</span><span id="status" class="status">Loading bundled data…</span></section>
+  <section class="controls">
+    <div class="control-group">
+      <h2>Map scope</h2>
+      <div><label for="section">Roman-numeral section</label><select id="section" disabled></select></div>
+      <div><label for="country">Country or region</label><select id="country" disabled></select></div>
+    </div>
+    <div class="control-group">
+      <h2>Tariff scenario</h2>
+      <div><label for="schedule">Tariff schedule</label><select id="schedule" disabled><option value="manual">Manual country rates</option><option value="biden">Biden-era / COVID — General Rate</option><option value="liberation">Liberation Day — enacted</option><option value="announced">Liberation Day — announced rates</option><option value="current">Current — June 2026</option></select></div>
+      <div><label for="tariff">Selected-country tariff: <output id="tariffValue">0%</output></label><input id="tariff" type="range" min="0" max="100" step="1" value="0" disabled></div>
+      <div><label for="reciprocal">Foreign tariff / US tariff: <output id="reciprocalValue">0%</output></label><input id="reciprocal" type="range" min="0" max="200" step="5" value="0" disabled></div>
+    </div>
+    <div class="control-group">
+      <h2>Elasticity assumptions</h2>
+      <div><label for="shortElasticity">Short-term elasticity: <output id="shortElasticityValue">-1.0</output></label><input id="shortElasticity" type="range" min="-5" max="0" step="0.1" value="-1" disabled></div>
+      <div><label for="longElasticity">Long-term elasticity: <output id="longElasticityValue">-1.5</output></label><input id="longElasticity" type="range" min="-5" max="0" step="0.1" value="-1.5" disabled></div>
+      <small class="help-text">Defaults: empirical aggregate import-demand benchmarks. The supplied import file has no elasticity field.</small>
+    </div>
+  </section>
+  <details class="formula"><summary>How the model works</summary><div class="formula-content">t<sub>F,c</sub> = reciprocal rate × t<sub>US,c</sub>; size share<sub>c</sub> = expenditure<sub>c</sub> / total expenditure; size-adjusted foreign tariff = size share<sub>c</sub> × t<sub>F,c</sub>; ln(P<sub>world,c</sub>) = −0.5 × (t<sub>US,c</sub> + size-adjusted t<sub>F,c</sub>) + 0.5 × min(t<sub>US,c</sub>, size-adjusted t<sub>F,c</sub>). Modeled imports<sub>c,h</sub> = baseline imports<sub>c</sub> × P<sub>world,c</sub> × (1 + t<sub>US,c</sub>)<sup>elasticity<sub>h</sub></sup> × (1 + t<sub>F,c</sub>)<sup>elasticity<sub>h</sub></sup>, where h is short-run or long-run. Foreign tariffs now directly reduce demand as well as affecting world prices. Separate price indexes, modeled imports, revenues, and Laffer curves are shown for both horizons. Biden-era / COVID uses the General Rate column from <code>Covid_Biden.csv</code>; the announced-rates option uses the Liberation Day file's Column 2 Rate of Duty values as the proposed high-rate scenario.</div></details>
+  <section class="chart-wrap"><div id="chart" class="empty">Load the CSV files to begin.</div></section>
+  <script>
+    const $ = id => document.getElementById(id);
+    let imports = [], mapping = new Map(), countryRates = new Map(), scheduleRates = new Map(), currentScheduleRates = new Map(), bidenScheduleRates = new Map();
+    const romanOrder = ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII","XIII","XIV","XV","XVI","XVII","XVIII","XIX","XX","XXI","XXII"];
+    const format = d3.format("$,.3s");
+    const aliases = new Map([
+      ["UNITED STATES", "United States of America"], ["RUSSIA", "Russia"],
+      ["SOUTH KOREA", "South Korea"], ["NORTH KOREA", "North Korea"],
+      ["CZECH REPUBLIC", "Czechia"], ["BOLIVIA", "Bolivia"],
+      ["VENEZUELA", "Venezuela"], ["TANZANIA", "Tanzania"]
+    ]);
+
+    async function loadData() {
+      $("status").textContent = "Loading…";
+      const [scheduleText, currentText, bidenText] = await Promise.all([
+        fetch("Liberation%20Day.csv").then(response => response.ok ? response.text() : Promise.reject(new Error("Liberation Day schedule unavailable"))),
+        fetch("Current.csv").then(response => response.ok ? response.text() : Promise.reject(new Error("June 2026 schedule unavailable"))),
+        fetch("Covid_Biden.csv").then(response => response.ok ? response.text() : Promise.reject(new Error("Biden schedule unavailable")))
+      ]);
+      const [importText, mapText] = await Promise.all([
+        fetch("ECON%20DATA%203.csv").then(response => response.ok ? response.text() : Promise.reject(new Error("Import data unavailable"))),
+        fetch("ECON%20DATA%203.5%20SectionMap.csv").then(response => response.ok ? response.text() : Promise.reject(new Error("Section map unavailable")))
+      ]);
+      imports = d3.csvParse(importText, d3.autoType).filter(d => d.CTY_NAME && d.I_COMMODITY_SDESC);
+      const mapRows = d3.csvParse(mapText);
+      const parseSchedule = (text, column = "General Rate of Duty") => d3.csvParse(text).map(d => {
+        const match = String(d[column] || "").match(/(\d+(?:\.\d+)?)%/);
+        const chapter = String(d["HTS Number"] || "").replace(/\D/g, "").slice(0, 2);
+        return match && chapter ? {chapter, rate: Number(match[1]) / 100} : null;
+      }).filter(Boolean);
+      scheduleRates = new Map(d3.rollups(parseSchedule(scheduleText), v => d3.mean(v, d => d.rate), d => d.chapter));
+      const announcedRates = new Map(d3.rollups(parseSchedule(scheduleText, "Column 2 Rate of Duty"), v => d3.mean(v, d => d.rate), d => d.chapter));
+      currentScheduleRates = new Map(d3.rollups(parseSchedule(currentText), v => d3.mean(v, d => d.rate), d => d.chapter));
+      bidenScheduleRates = new Map(d3.rollups(parseSchedule(bidenText), v => d3.mean(v, d => d.rate), d => d.chapter));
+      mapping = new Map(mapRows.map(d => [String(d.Chapter).trim(), { section: d.Section.trim(), name: d.Name.trim() }]));
+      imports.forEach(d => {
+        d.section = d["HTS SECTION"] || mapping.get(String(d.I_COMMODITY))?.section || "";
+        d.scheduleRate = scheduleRates.get(String(d.I_COMMODITY).padStart(2, "0")) || 0;
+        d.announcedRate = announcedRates.get(String(d.I_COMMODITY).padStart(2, "0")) || 0;
+        d.currentScheduleRate = currentScheduleRates.get(String(d.I_COMMODITY).padStart(2, "0")) || 0;
+        d.bidenScheduleRate = bidenScheduleRates.get(String(d.I_COMMODITY).padStart(2, "0")) || 0;
+      });
+      countryRates = new Map([...new Set(imports.filter(d => d.CTY_CODE !== "-").map(d => d.CTY_NAME))].map(name => [name, 0]));
+      populate();
+      $("status").textContent = `${imports.length.toLocaleString()} import records loaded.`;
+      render();
+    }
+    function populate() {
+      $("section").innerHTML = `<option value="ALL">All sections</option>` + romanOrder
+        .filter(s => imports.some(d => d.section === s))
+        .map(s => `<option value="${s}">${s} — ${mapping.get(String(imports.find(d=>d.section===s)?.I_COMMODITY))?.name || "Section"}</option>`).join("");
+      const continentGroups = ["AFRICA", "ASIA", "EUROPE", "NORTH AMERICA", "SOUTH AMERICA", "AUSTRALIA AND OCEANIA"];
+      const countryOptions = ["__ALL__", ...continentGroups, ...[...countryRates.keys()]
+        .filter(name => !continentGroups.includes(name) && name !== "TOTAL FOR ALL COUNTRIES")
+        .sort((a,b) => a.localeCompare(b))];
+      $("country").innerHTML = countryOptions
+        .map(name => `<option value="${encodeURIComponent(name)}">${name === "__ALL__" ? "ALL COUNTRIES" : name}</option>`).join("");
+      $("section").disabled = false;
+      $("schedule").disabled = false;
+      $("country").disabled = false;
+      $("tariff").disabled = $("shortElasticity").disabled = $("longElasticity").disabled = $("reciprocal").disabled = false;
+      $("section").onchange = render;
+      $("schedule").onchange = render;
+      $("country").onchange = () => {
+        const name = decodeURIComponent($("country").value);
+        $("tariff").value = name === "__ALL__" ? (countryRates.get("__ALL__") || 0) : (countryRates.get(name) || 0);
+        $("tariffValue").textContent = `${$("tariff").value}%`;
+        render();
+      };
+    }
+    $("tariff").addEventListener("input", () => {
+      const name = decodeURIComponent($("country").value);
+      countryRates.set(name, Number($("tariff").value));
+      $("tariffValue").textContent = `${$("tariff").value}%`;
+      render();
+    });
+    ["shortElasticity", "longElasticity"].forEach(id => $(id).addEventListener("input", () => {
+      $(`${id}Value`).textContent = Number($(id).value).toFixed(1);
+      render();
+    }));
+    $("reciprocal").addEventListener("input", () => {
+      $("reciprocalValue").textContent = `${$("reciprocal").value}%`;
+      render();
+    });
+    function render() {
+      if (!imports.length) return;
+      const section = $("section").value, selectedCountry = decodeURIComponent($("country").value);
+      const shortElasticity = Number($("shortElasticity").value);
+      const longElasticity = Number($("longElasticity").value);
+      const reciprocalShare = Number($("reciprocal").value) / 100;
+      $("chart").className = "";
+      const filtered = imports.filter(d => d.CTY_CODE !== "-" && (section === "ALL" || d.section === section));
+      const values = d3.rollups(filtered, v => ({
+          baseline: d3.sum(v, d => +d["Total Volume"] || 0),
+          scheduleRate: d3.sum(v, d => (+d["Total Volume"] || 0) * d.scheduleRate) / d3.sum(v, d => +d["Total Volume"] || 0),
+          announcedRate: d3.sum(v, d => (+d["Total Volume"] || 0) * d.announcedRate) / d3.sum(v, d => +d["Total Volume"] || 0),
+          currentScheduleRate: d3.sum(v, d => (+d["Total Volume"] || 0) * d.currentScheduleRate) / d3.sum(v, d => +d["Total Volume"] || 0)
+          , bidenScheduleRate: d3.sum(v, d => (+d["Total Volume"] || 0) * d.bidenScheduleRate) / d3.sum(v, d => +d["Total Volume"] || 0)
+        }), d => d.CTY_NAME)
+        .map(([name, aggregate]) => {
+          const baseline = aggregate.baseline;
+          const chapterRate = $("schedule").value === "current" ? aggregate.currentScheduleRate : $("schedule").value === "biden" ? aggregate.bidenScheduleRate : $("schedule").value === "announced" ? aggregate.announcedRate : aggregate.scheduleRate;
+          const tariff = $("schedule").value === "liberation" || $("schedule").value === "announced" || $("schedule").value === "current" || $("schedule").value === "biden"
+            ? (chapterRate || 0)
+            : (((countryRates.get("__ALL__") || 0) / 100) || ((countryRates.get(name) || 0) / 100));
+          const foreignTariff = reciprocalShare * tariff;
+          const sizeShare = baseline / d3.sum(filtered, d => +d["Total Volume"] || 0);
+          const sizeAdjustedForeignTariff = sizeShare * foreignTariff;
+          const worldPriceFactor = Math.exp(-0.5 * (tariff + sizeAdjustedForeignTariff) + 0.5 * Math.min(tariff, sizeAdjustedForeignTariff));
+          const landedPriceFactor = worldPriceFactor * (1 + tariff);
+          const shortValue = baseline * worldPriceFactor * Math.pow(1 + tariff, shortElasticity) * Math.pow(1 + foreignTariff, shortElasticity);
+          const longValue = baseline * worldPriceFactor * Math.pow(1 + tariff, longElasticity) * Math.pow(1 + foreignTariff, longElasticity);
+          const interaction = tariff * foreignTariff * Math.pow(1 + tariff, shortElasticity) * baseline;
+          return { name, baseline, tariff, foreignTariff, sizeShare, sizeAdjustedForeignTariff, value: shortValue, shortValue, longValue, revenue: tariff * shortValue, longRevenue: tariff * longValue, interaction, worldPriceFactor, landedPriceFactor };
+        }).filter(d => d.shortValue > 0);
+      const baselineTotal = d3.sum(values, d => d.baseline), total = d3.sum(values, d => d.shortValue), longTotal = d3.sum(values, d => d.longValue);
+      const postTariffPriceIndex = d3.sum(values, d => d.baseline * d.landedPriceFactor) / baselineTotal;
+      const shortPriceIndex = d3.sum(values, d => d.shortValue * d.landedPriceFactor) / total;
+      const longPriceIndex = d3.sum(values, d => d.longValue * d.landedPriceFactor) / longTotal;
+      const revenue = d3.sum(values, d => d.revenue), longRevenue = d3.sum(values, d => d.longRevenue);
+      const interactionTotal = d3.sum(values, d => d.interaction);
+      const selected = values.find(d => d.name === selectedCountry);
+      if (!values.length) { $("chart").innerHTML = '<div class="empty">No import data for this selection.</div>'; return; }
+      const width = 1160, height = 650;
+      $("chart").innerHTML = `<div><strong>US imports</strong> · ${section === "ALL" ? "All sections" : "Section " + section} · Short-run modeled: ${format(total)} · Long-run modeled: ${format(longTotal)} · Short-run revenue: ${format(revenue)} · Long-run revenue: ${format(longRevenue)} · d interaction term: ${format(interactionTotal)}<br><span class="price-index">Short-run price index: ${shortPriceIndex.toFixed(3)} (${d3.format("+.1%")(shortPriceIndex - 1)})</span> <span class="price-index">Long-run price index: ${longPriceIndex.toFixed(3)} (${d3.format("+.1%")(longPriceIndex - 1)})</span><br><strong>${selectedCountry === "__ALL__" ? "ALL COUNTRIES" : selectedCountry}</strong>: ${selected ? `${selected.tariff * 100}% US tariff · ${selected.foreignTariff * 100}% foreign tariff · ${format(selected.revenue)} short-run revenue · ${format(selected.longRevenue)} long-run revenue · d = ${format(selected.interaction)}` : "group rate ready to apply"}</div><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="World map of modeled US imports by country"></svg><h3>Laffer tariff curves</h3><div id="laffer"></div>`;
+      renderLaffer(values, shortElasticity, longElasticity, reciprocalShare);
+      const svg = d3.select("#chart svg"), projection = d3.geoNaturalEarth1().fitSize([width, height], {type:"Sphere"});
+      const path = d3.geoPath(projection), color = d3.scaleSequentialLog(d3.interpolateBlues).domain([1, Math.max(...values.map(d=>d.value))]);
+      d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(world => {
+        const countries = topojson.feature(world, world.objects.countries);
+        svg.append("path").datum({type:"Sphere"}).attr("d", path).attr("fill","#eef4ff");
+        svg.selectAll(".country").data(countries.features).join("path").attr("class","country").attr("d",path).attr("fill","#e9eef5");
+        const byName = new Map(values.map(d => [d.name.toUpperCase(), d]));
+        const points = countries.features.map(f => {
+          const name = f.properties.name, item = byName.get(name.toUpperCase()) || byName.get([...aliases].find(([,v]) => v.toUpperCase() === name.toUpperCase())?.[0]);
+          return item ? {...item, coordinates: d3.geoCentroid(f)} : null;
+        }).filter(Boolean);
+        // Keep the radius scale anchored to baseline imports so tariff changes
+        // produce a visible size change instead of rescaling the whole map.
+        const baselineMax = d3.max(points, d => d.baseline);
+        const maxRadius = 42;
+        // Area, rather than radius, is proportional to modeled imports.
+        // Keeping the denominator at the baseline maximum preserves changes
+        // in bubble size when the tariff or elasticity slider moves.
+        const radius = d => maxRadius * Math.sqrt(d.value / baselineMax);
+        const bubbles = svg.selectAll(".bubble").data(points).join("circle").attr("class","bubble")
+          .attr("transform", d => `translate(${projection(d.coordinates)})`).attr("r", radius)
+          .attr("fill", d => d.name === selectedCountry ? "#f08a24" : "#d83b5b");
+        bubbles.append("title").text(d => `${d.name}: US tariff ${(d.tariff * 100).toFixed(0)}%, foreign tariff ${(d.foreignTariff * 100).toFixed(0)}% (size-adjusted ${(d.sizeAdjustedForeignTariff * 100).toFixed(2)}%), world price factor ${(d.worldPriceFactor * 100).toFixed(1)}%, short-run modeled ${format(d.shortValue)}, long-run modeled ${format(d.longValue)}, short-run revenue ${format(d.revenue)}, long-run revenue ${format(d.longRevenue)}`);
+        svg.append("text").attr("class","map-label").attr("x",12).attr("y",height-18).text("Source: ECON DATA 3.csv · 2024 imports");
+      }).catch(() => { $("chart").innerHTML += '<div class="empty">The map background could not be loaded. Check your internet connection.</div>'; });
+    }
+    function renderLaffer(values, shortElasticity, longElasticity, reciprocalShare) {
+      const width = 1160, height = 300, margin = {top: 20, right: 30, bottom: 48, left: 76};
+      const data = d3.range(0, 3.001, 0.01).map(t => {
+        const revenue = elasticity => d3.sum(values, d => {
+          const tf = reciprocalShare * t * d.sizeShare;
+          const worldPriceFactor = Math.exp(-0.5 * (t + tf) + 0.5 * Math.min(t, tf));
+          const foreignTariff = reciprocalShare * t;
+          const modeled = d.baseline * worldPriceFactor * Math.pow(1 + t, elasticity) * Math.pow(1 + foreignTariff, elasticity);
+          return t * modeled;
+        });
+        return {t, shortRevenue: revenue(shortElasticity), longRevenue: revenue(longElasticity)};
+      });
+      const shortPeak = data.reduce((a, b) => b.shortRevenue > a.shortRevenue ? b : a);
+      const longPeak = data.reduce((a, b) => b.longRevenue > a.longRevenue ? b : a);
+      const x = d3.scaleLinear().domain([0, 3]).range([margin.left, width - margin.right]);
+      const y = d3.scaleLinear().domain([0, d3.max(data, d => Math.max(d.shortRevenue, d.longRevenue)) * 1.1]).nice().range([height - margin.bottom, margin.top]);
+      const svg = d3.select("#laffer").append("svg").attr("viewBox", `0 0 ${width} ${height}`).attr("role", "img").attr("aria-label", "Laffer curve showing tariff revenue");
+      svg.append("g").attr("transform", `translate(0,${height-margin.bottom})`).call(d3.axisBottom(x).ticks(10).tickFormat(d3.format(".0%")));
+      svg.append("g").attr("transform", `translate(${margin.left},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(format));
+      const line = key => d3.line().x(d=>x(d.t)).y(d=>y(d[key]));
+      svg.append("path").datum(data).attr("class", "laffer-line").attr("d", line("shortRevenue"));
+      svg.append("path").datum(data).attr("class", "laffer-line laffer-long").attr("d", line("longRevenue"));
+      [[shortPeak, "#8b3fc7", "Short"], [longPeak, "#238b45", "Long"]].forEach(([peak, color, label], i) => {
+        svg.append("circle").attr("class", "laffer-point").attr("fill", color).attr("cx", x(peak.t)).attr("cy", y(peak[`${label.toLowerCase()}Revenue`])).attr("r", 6);
+        svg.append("text").attr("class", "map-label").attr("x", x(peak.t)+8).attr("y", y(peak[`${label.toLowerCase()}Revenue`])-10-i*16).text(`${label}-run peak: ${(peak.t*100).toFixed(0)}% · ${format(peak[`${label.toLowerCase()}Revenue`])}`);
+      });
+      svg.append("text").attr("class", "map-label").attr("x", width - 160).attr("y", 20).attr("fill", "#8b3fc7").text("— Short-run");
+      svg.append("text").attr("class", "map-label").attr("x", width - 160).attr("y", 38).attr("fill", "#238b45").text("— Long-run");
+      svg.append("text").attr("class", "map-label").attr("x", width/2).attr("y", height-8).attr("text-anchor", "middle").text("Uniform tariff rate (0%–300%)");
+      svg.append("text").attr("class", "map-label").attr("transform", `translate(16,${height/2}) rotate(-90)`).attr("text-anchor", "middle").text("Tariff revenue");
+    }
+    loadData().catch(error => {
+      $("status").textContent = `Could not load bundled data: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
